@@ -1,0 +1,129 @@
+package com.sap.pi.javamapping;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
+
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
+import com.sap.aii.mapping.api.AbstractTransformation;
+import com.sap.aii.mapping.api.StreamTransformationException;
+import com.sap.aii.mapping.api.TransformationInput;
+import com.sap.aii.mapping.api.TransformationOutput;
+import com.sap.aii.mapping.lookup.Channel;
+import com.sap.aii.mapping.lookup.LookupService;
+import com.sap.aii.mapping.lookup.Payload;
+import com.sap.aii.mapping.lookup.SystemAccessor;
+
+public class TestJavaMapping extends AbstractTransformation {
+
+	@Override
+	public void transform(TransformationInput in, TransformationOutput out) throws StreamTransformationException {
+		// TODO Auto-generated method stub
+		String inParam = in.getInputParameters().getString("DynamicParam");
+		getTrace().addInfo("Input Parameter: " + inParam);
+		this.execute(in.getInputPayload().getInputStream(), out.getOutputPayload().getOutputStream(), inParam);
+	}
+
+	private void execute(InputStream inputStream, OutputStream outputStream, String inParam) {
+		try {
+
+			String filepath = "default";
+
+			ByteArrayOutputStream outputResult = new ByteArrayOutputStream();
+			byte[] buffer = new byte[1024];
+			int length;
+			while ((length = inputStream.read(buffer)) != -1) {
+				outputResult.write(buffer, 0, length);
+			}
+			//Creating xml string for parsing
+			String inputString = outputResult.toString("UTF-8");
+			
+			//clearing output stream
+			outputResult.flush();
+			
+			// Read xml and fetch the filepath
+			DocumentBuilderFactory dbfactory = DocumentBuilderFactory.newInstance();
+			DocumentBuilder dbuilder = dbfactory.newDocumentBuilder();
+
+			Document xmldocument = dbuilder.parse(new ByteArrayInputStream(inputString.getBytes("UTF-8")));
+
+			// Normalize the XML Structure; It's just too important !!
+			xmldocument.getDocumentElement().normalize();
+			//Fetching the username nodelist from xml
+			NodeList usernameNodeList = xmldocument.getElementsByTagName("username");
+			Node usernode = usernameNodeList.item(0);
+			if (usernode != null) {
+				usernode = usernode.getFirstChild();
+				if (usernode != null) {
+					filepath = usernode.getNodeValue();
+				}
+			}
+			
+			//reinitializing the inputStream for REST call
+			InputStream restInputStream = new ByteArrayInputStream(outputResult.toByteArray());
+
+			String status = "";
+			// perform the rest look up
+			Channel channel = LookupService.getChannel("BusinessComponent", "RESTReceiverGetToken");
+			SystemAccessor accessor = null;
+			accessor = LookupService.getSystemAccessor(channel);
+			Payload payload = LookupService.getXmlPayload(restInputStream);
+			Payload RESTOutPayload = null;
+			// Creating output payload after REST Call
+			RESTOutPayload = accessor.call(payload);
+
+			// Creating stream from output payload to parse
+			InputStream inp = RESTOutPayload.getContent();
+			DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+			DocumentBuilder builder = factory.newDocumentBuilder();
+			Document document = builder.parse(inp);
+			NodeList stats = document.getElementsByTagName("token");
+			Node node = stats.item(0);
+			if (node != null) {
+				node = node.getFirstChild();
+				if (node != null) {
+					status = node.getNodeValue();
+				}
+			}
+			// Creating target document for output of java mapping
+			Document targetDoc = builder.newDocument();
+
+			// Creating target root and namespace
+			Element targetRoot = (Element) targetDoc.createElement("ns0:MT_BJ_Response");
+			targetRoot.setAttribute("xmlns:ns0", "http://abc.com/java");
+
+			// Creating target structure
+			Element token = (Element) targetDoc.createElement("token");
+			token.setTextContent(status);
+			Element customParam = (Element) targetDoc.createElement("customParam");
+			customParam.setTextContent(filepath);
+
+			targetRoot.appendChild(token);
+			targetRoot.appendChild(customParam);
+			targetDoc.appendChild(targetRoot);
+
+			// Creating DOM Parsed target document for output stream
+			DOMSource domSource = new DOMSource(targetDoc);
+			StreamResult result = new StreamResult(outputStream);
+
+			// Creating the output template to send final output
+			TransformerFactory tf = TransformerFactory.newInstance();
+			Transformer transformer = tf.newTransformer();
+			transformer.transform(domSource, result);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	} // end of execute
+}
